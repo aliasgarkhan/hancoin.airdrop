@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
 # Bot API Token
-TOKEN = 'YOUR_BOT_API_KEY'
+TOKEN = '8151740030:AAHTC4QrDOq50gNbYpAZ3QV-toG18Th9-eg'
 
 # Veritabanı için JSON dosyasını yükleme
 def load_data():
