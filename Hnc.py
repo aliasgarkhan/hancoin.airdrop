@@ -1,90 +1,139 @@
-from flask import Flask, render_template, request, redirect, url_for
+import json
+import random
 import time
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
-app = Flask(__name__)
+# Bot API Token
+TOKEN = 'YOUR_BOT_API_KEY'
 
-# Kullanıcı verileri
-users = {}
+# Veritabanı için JSON dosyasını yükleme
+def load_data():
+    try:
+        with open('players.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    if request.method == 'POST':
-        username = request.form['username']
-        if username and username not in users:
-            users[username] = {
-                'points': 0,
-                'farming_active': False,
-                'farming_start_time': None,
-                'last_reward_day': None,
-                'consecutive_days': 0
-            }
-            return redirect(url_for('main_page', username=username))
-        elif username in users:
-            return redirect(url_for('main_page', username=username))
-    return render_template('index.html')
+# Veritabanına verileri kaydetme
+def save_data(data):
+    with open('players.json', 'w') as f:
+        json.dump(data, f)
 
-@app.route('/main/<username>')
-def main_page(username):
-    user_data = users.get(username)
-    return render_template('main.html', username=username, points=user_data['points'])
+# Referal linki oluşturma
+def generate_referral_link(user_id):
+    return f"https://t.me/{user_id}?ref={user_id}"
 
-@app.route('/tasks/<username>')
-def tasks_page(username):
-    user_data = users.get(username)
-    return render_template('tasks.html', username=username)
+# Kullanıcı ekleme
+def add_player(user_id, username, referrer_id=None):
+    data = load_data()
+    referral_link = generate_referral_link(user_id)
+    
+    if user_id not in data:
+        data[user_id] = {
+            "username": username,
+            "coins": 0,
+            "last_claim_time": 0,
+            "referrer": referrer_id,
+            "referral_link": referral_link,
+            "referred_players": []
+        }
+        # Referans varsa, referer'a 100 puan ekle
+        if referrer_id:
+            if referrer_id in data:
+                data[referrer_id]["coins"] += 100
+            else:
+                data[referrer_id] = {
+                    "username": "",
+                    "coins": 100,
+                    "last_claim_time": 0,
+                    "referrer": None,
+                    "referral_link": "",
+                    "referred_players": []
+                }
+        save_data(data)
 
-@app.route('/leaderboard')
-def leaderboard_page():
-    sorted_users = sorted(users.items(), key=lambda x: x[1]['points'], reverse=True)
-    return render_template('leaderboard.html', users=sorted_users)
+# /start komutu
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text(
+        "Merhaba! HanCoin Airdrop oyununa hoş geldiniz! Katılmak için /join komutunu kullanın."
+    )
 
-@app.route('/start_farming/<username>')
-def start_farming(username):
-    user_data = users.get(username)
-    if not user_data['farming_active']:
-        user_data['farming_active'] = True
-        user_data['farming_start_time'] = time.time()
-    return redirect(url_for('main_page', username=username))
+# /join komutu - Katılım için
+def join(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    referrer_id = context.args[0] if context.args else None  # Argüman olarak referer alıyoruz
 
-@app.route('/update/<username>')
-def update(username):
-    user_data = users.get(username)
+    if user_id in load_data():
+        update.message.reply_text("Zaten katıldınız!")
+    else:
+        add_player(user_id, username, referrer_id)
+        update.message.reply_text(f"Başarıyla katıldınız! Referans linkiniz: {generate_referral_link(user_id)}")
 
-    # Günlük ödül sistemi
-    current_day = int(time.time() // (24 * 3600))  # Gün sayısını al
-    if user_data['last_reward_day'] is None:
-        user_data['last_reward_day'] = current_day
-        user_data['consecutive_days'] = 1
-        reward_user(user_data)
-    elif current_day > user_data['last_reward_day']:
-        if current_day - user_data['last_reward_day'] == 1:
-            user_data['consecutive_days'] += 1
-        else:
-            user_data['consecutive_days'] = 1  # Gün kaçırıldıysa sıfırla
-        user_data['last_reward_day'] = current_day
-        reward_user(user_data)
+# /claim komutu - Günlük ödül kazanma
+def claim(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    data = load_data()
 
-    if user_data['farming_active']:
-        elapsed_time = time.time() - user_data['farming_start_time']
-        if elapsed_time >= 14400:  # 4 saat = 14400 saniye
-            user_data['points'] += 44  # Farming ile kazanılan puan
-            user_data['farming_active'] = False  # Farming süresi sona erdi
-            user_data['farming_start_time'] = None  # Zamanı sıfırla
+    if user_id not in data:
+        update.message.reply_text("Öncelikle /join komutuyla katılmanız gerekiyor.")
+        return
 
-    return redirect(url_for('main_page', username=username))
+    current_time = time.time()
+    last_claim_time = data[user_id]["last_claim_time"]
+    
+    # Günlük ödül için 24 saat beklenmesi gerekiyor
+    if current_time - last_claim_time < 86400:
+        update.message.reply_text("Henüz günlük ödülünüzü alamazsınız. Lütfen 24 saat bekleyin.")
+        return
+    
+    # Ödül miktarı
+    reward = random.randint(1, 10)  # 1 ile 10 arasında rastgele HanCoin
+    data[user_id]["coins"] += reward
+    data[user_id]["last_claim_time"] = current_time
+    save_data(data)
 
-def reward_user(user_data):
-    # Günlük ödül miktarını belirle
-    day = user_data['consecutive_days']
-    if day in (1, 2):
-        user_data['points'] += 10  # 1. ve 2. gün ödülü
-    elif day in (3, 4):
-        user_data['points'] += 30  # 3. ve 4. gün ödülü
-    elif day in (5, 6):
-        user_data['points'] += 60  # 5. ve 6. gün ödülü
-    elif day == 7:
-        user_data['points'] += 100  # 7. gün ödülü
-        user_data['consecutive_days'] = 0  # 7. günden sonra sıfırla
+    update.message.reply_text(f"Tebrikler! {reward} HanCoin kazandınız! Şu an {data[user_id]['coins']} HanCoin'iniz var.")
+
+# /balance komutu - Kullanıcının bakiyesi
+def balance(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    data = load_data()
+
+    if user_id not in data:
+        update.message.reply_text("Öncelikle /join komutuyla katılmanız gerekiyor.")
+        return
+
+    update.message.reply_text(f"Şu anda {data[user_id]['coins']} HanCoin'iniz var.")
+
+# /leaderboard komutu - Liderlik tablosu
+def leaderboard(update: Update, context: CallbackContext):
+    data = load_data()
+    # Verileri puana göre sıralıyoruz
+    leaderboard_data = sorted(data.items(), key=lambda x: x[1]["coins"], reverse=True)[:100]
+
+    leaderboard_text = "🏆 **Leaderboard** 🏆\n\n"
+    for i, (user_id, player_data) in enumerate(leaderboard_data):
+        leaderboard_text += f"{i+1}. {player_data['username']} - {player_data['coins']} HanCoin\n"
+
+    update.message.reply_text(leaderboard_text)
+
+# Ana işlev
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    # Komutları bağlayalım
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("join", join))
+    dp.add_handler(CommandHandler("claim", claim))
+    dp.add_handler(CommandHandler("balance", balance))
+    dp.add_handler(CommandHandler("leaderboard", leaderboard))
+
+    # Botu başlatalım
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    main()
